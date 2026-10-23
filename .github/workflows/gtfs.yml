@@ -1,0 +1,26 @@
+# Rebuilds data/gtfs/*.json from the latest GRT GTFS feed every Monday (and on demand from the Actions tab).
+name: Update GRT schedule
+on:
+  schedule: [{ cron: '17 9 * * 1' }]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download GRT GTFS
+        run: |
+          for u in https://webapps.regionofwaterloo.ca/api/grt-routes/api/staticfeeds/1 \
+                   http://webapps.regionofwaterloo.ca/api/grt-routes/api/staticfeeds/1; do
+            curl -fsSL --retry 3 -m 120 -o gtfs.zip "$u" && unzip -tq gtfs.zip && break
+          done
+          unzip -o -q gtfs.zip -d gtfs
+      - name: Build JSON
+        run: python3 scripts/build_gtfs.py gtfs data/gtfs
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions"; git config user.email "actions@users.noreply.github.com"
+          git add data/gtfs
+          git diff --cached --quiet || (git commit -m "Update GRT schedule data" && git push)

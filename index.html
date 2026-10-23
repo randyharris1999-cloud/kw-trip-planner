@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#2EAD5E">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>KW Trip Planner</title>
+  <link rel="icon" href="img/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div id="map" aria-label="Map of Kitchener-Waterloo"></div>
+
+  <button id="infoBtn" class="info-btn" aria-label="About this app">
+    <svg viewBox="0 0 24 24" width="20" height="20"><circle cx="12" cy="5" r="2.2"/><path d="M9 9.5h4.2v8.3H15V20H9v-2.2h1.8v-6.1H9z"/></svg>
+  </button>
+
+  <!-- Trip planner card -->
+  <section id="planner" class="card planner" aria-label="Plan a trip">
+    <div class="field">
+      <span class="dot dot-from" aria-hidden="true"></span>
+      <input id="fromInput" type="text" placeholder="Start address" autocomplete="off" enterkeyhint="next">
+      <button id="locateBtn" class="icon-btn" aria-label="Use my location">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 8a4 4 0 100 8 4 4 0 000-8zm8.94 3A9 9 0 0013 3.06V1h-2v2.06A9 9 0 003.06 11H1v2h2.06A9 9 0 0011 20.94V23h2v-2.06A9 9 0 0020.94 13H23v-2h-2.06zM12 19a7 7 0 110-14 7 7 0 010 14z"/></svg>
+      </button>
+    </div>
+    <div class="divider"></div>
+    <div class="field">
+      <span class="dot dot-to" aria-hidden="true"></span>
+      <input id="toInput" type="text" placeholder="Where to?" autocomplete="off" enterkeyhint="go">
+      <button id="swapBtn" class="icon-btn swap" aria-label="Swap start and destination">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M16 17.01V10h-2v7.01h-3L15 21l4-3.99h-3zM9 3L5 6.99h3V14h2V6.99h3L9 3z"/></svg></button>
+    </div>
+    <ul id="suggest" class="suggest" role="listbox" hidden></ul>
+    <button id="goBtn" class="go-btn">Plan trip</button>
+  </section>
+
+  <!-- Layer chips -->
+  <div class="chips" role="group" aria-label="Map layers">
+    <button class="chip on" data-layer="buses"><span class="chip-ico bus"></span>Buses</button>
+    <button class="chip on" data-layer="stops"><span class="chip-ico stop"></span>Stops</button>
+    <button class="chip" data-layer="routes"><span class="chip-ico route"></span>Routes</button>
+    <button class="chip" data-layer="trails"><span class="chip-ico trail"></span>Trails</button>
+  </div>
+
+  <!-- Bottom sheet (results / status) -->
+  <section id="sheet" class="sheet" aria-live="polite">
+    <div class="grab"></div>
+    <div id="sheetBody"></div>
+  </section>
+
+  <!-- Credit pill (bottom-left, as in reference) -->
+  <div class="credit">
+    <span class="avatar">RH</span>
+    <span>Created by Randy Harris</span>
+  </div>
+
+  <dialog id="infoDlg" class="card dlg">
+    <h2>KW Trip Planner</h2>
+    <p>Plan walk, bus and ION trips across Kitchener and Waterloo using Region of Waterloo open data (streets, trails, addresses) and the Grand River Transit GTFS feed.</p>
+    <ul class="legend">
+      <li><span class="lg-pin" data-k="walk"></span>Start / you are here</li>
+      <li><span class="lg-pin" data-k="stop"></span>Bus stop</li>
+      <li><span class="lg-pin" data-k="dest"></span>Destination</li>
+      <li><span class="lg-pin" data-k="trail"></span>Trail</li>
+      <li><span class="lg-bus"></span>Bus (route colour)</li>
+    </ul>
+    <p class="muted" id="feedInfo"></p>
+    <form method="dialog"><button class="go-btn">Close</button></form>
+  </dialog>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="js/gtfsrt.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/icons.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Turf.js/6.5.0/turf.min.js"></script>
+  <script src="js/app.js"></script>
+  <script src="js/router.js"></script>
+</body>
+</html>
