@@ -1,0 +1,6 @@
+# Cloudflare Worker: live GRT feed relay (code in worker/feed-proxy.js).
+# Only the Worker is deployed; the web app itself is served by GitHub Pages.
+name = "kw-trip-planner"
+main = "worker/feed-proxy.js"
+compatibility_date = "2026-06-01"
+workers_dev = true
