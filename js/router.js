@@ -123,7 +123,8 @@
   let sched = null;
   async function loadSchedule() {
     if (sched) return sched;
-    const j = await fetch('data/gtfs/schedule.json').then(r => r.json());
+    const j = APP.noSchedule ? { services: {}, patterns: [], headsigns: [], trips: [] }
+      : await fetch('data/gtfs/schedule.json').then(r => r.ok ? r.json() : { services: {}, patterns: [], headsigns: [], trips: [] });
     j.trips.forEach(t => { let acc = 0; t.abs = t[4].map((d, i) => (acc = i ? acc + d : d)); });
     // stop → [pattern, index]
     j.stopPats = APP.stops.map(() => []);

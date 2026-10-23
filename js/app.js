@@ -23,18 +23,17 @@
   new ResizeObserver(setPlannerH).observe($('#planner')); setPlannerH();
 
   // ---------- Static GTFS ----------
-  let stopsJ, routes;
+  // If the GRT schedule hasn't been built yet, keep going without transit: addresses, live location
+  // and walking trips still work, and buses appear automatically once data/gtfs/ is filled.
+  let stopsJ = { stops: [] }, routes = {}, noSchedule = false;
   try {
     [stopsJ, routes] = await Promise.all([
-      fetch('data/gtfs/stops.json').then(r => r.json()),
-      fetch('data/gtfs/routes.json').then(r => r.json())
+      fetch('data/gtfs/stops.json').then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
+      fetch('data/gtfs/routes.json').then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
     ]);
-  } catch (e) {
-    $('#sheetBody').innerHTML = '<div class="status"><b>GRT schedule data isn\'t built yet.</b><br><span class="muted">Run the "Update GRT schedule" action (see README).</span></div>';
-    $('#sheet').classList.add('open'); throw e;
-  }
+  } catch (e) { console.warn('GRT schedule not built yet — walking only', e); noSchedule = true; }
   const stops = stopsJ.stops.map(([code, name, lat, lon, id], i) => ({ i, code, name, lat, lon, id: id ?? code }));
-  window.APP = { map, stops, routes, layers };
+  window.APP = { map, stops, routes, layers, noSchedule };
 
   // Route lines (official route colours)
   for (const r of Object.values(routes)) {
@@ -113,7 +112,8 @@
   }
   const fmtTime = (t, sec) => new Date(t * 1000).toLocaleTimeString('en-CA', { hour: 'numeric', minute: '2-digit', ...(sec ? { second: '2-digit' } : {}), timeZone: 'America/Toronto' });
   function status(n) {
-    const head = noFeed ? '<b>Schedule only</b> · live bus positions are off'
+    const head = noSchedule ? '<b>Walking only</b> · GRT bus schedule not loaded yet'
+      : noFeed ? '<b>Schedule only</b> · live bus positions are off'
       : `<b>${n} buses</b> · ${isLive ? 'live' : 'snapshot'} ${fmtTime(feedTime, isLive)}`;
     $('#sheetBody').innerHTML = `<div class="status"><span class="live-dot${isLive ? ' pulse' : ''}" style="background:${isLive ? '#2EAD5E' : '#E8A33A'}"></span>
       <div>${head}${alerts.length ? ` · <a href="#" id="alertsLink">${alerts.length} service alerts</a>` : ''}<br>
