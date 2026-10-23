@@ -8,7 +8,17 @@ window.CONFIG = {
   gis: {
     addresses: 'https://utility.arcgis.com/usrsvcs/servers/d4d0c6dedec14e59930688f3830776c6/rest/services/OpenData/OpenData/MapServer/1',
     streets:   'https://utility.arcgis.com/usrsvcs/servers/ab85e142e5de445aa75a678b049048dd/rest/services/OpenData/OpenData/MapServer/2',
-    trails:    'https://utility.arcgis.com/usrsvcs/servers/32365c5c24d240fb9a5aed926a5d7a9f/rest/services/OpenData/OpenData/MapServer/8'
+    trails:    'https://utility.arcgis.com/usrsvcs/servers/32365c5c24d240fb9a5aed926a5d7a9f/rest/services/OpenData/OpenData/MapServer/8',
+    // extra walking paths joined into the walk network (walkways, pathways, pedestrian links)
+    paths: [
+      { // City of Kitchener Walkability network: everything except plain sidewalks (the street centrelines cover those)
+        url: 'https://services1.arcgis.com/qAo1OsXi67t7XgmS/arcgis/rest/services/Walkability/FeatureServer/0',
+        where: "CATEGORY = 'PATHWAYS' OR SUBCATEGORY IN ('WALKWAY','LINK (PEDESTRIAN)','LINK (MUT)','CROSSWALK')",
+        fields: 'FEATURE_TYPE', noNode: { field: 'FEATURE_TYPE', values: ['UNDERPASS', 'OVERPASS', 'BRIDGE'] } },
+      { // City of Waterloo trails, multi-use paths and walkways
+        url: 'https://services.arcgis.com/ZpeBVw5o1kjit7LT/arcgis/rest/services/Trails_and_Pathways/FeatureServer/0',
+        where: "LIFECYCLESTATUS = 'Active'", fields: 'PATH_TYPE' }
+    ]
   },
   // GTFS-Realtime. GRT's live feed blocks browsers (no CORS header), so it is read through a tiny
   // Cloudflare Worker relay (see worker/). Paste the Worker's address into liveBase, e.g.
@@ -27,7 +37,7 @@ window.CONFIG = {
 window.arcgisAll = async function (url, where, fields, precision = 6) {
   const base = `${url}/query?where=${encodeURIComponent(where)}`;
   const { count } = await fetch(`${base}&returnCountOnly=true&f=json`).then(r => r.json());
-  const page = 1000, pages = [];
+  const page = 1000, pages = [];   // 1,000 works on every layer used here
   for (let off = 0; off < count; off += page) {
     pages.push(fetch(`${base}&outFields=${fields}&outSR=4326&geometryPrecision=${precision}&orderByFields=OBJECTID&resultOffset=${off}&resultRecordCount=${page}&f=geojson`)
       .then(r => r.json()));

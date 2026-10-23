@@ -3,7 +3,7 @@
   const C = window.CONFIG;
   const WALK = C.walkSpeedKmh / 3.6;          // m/s
   const SHED_M = C.walkshedMinutes * 60 * WALK; // 10 min ≈ 800 m
-  const MAX_ACCESS_M = 1200;                  // max walk to/from a stop (~15 min)
+  const MAX_ACCESS_M = 1600;                  // max walk to/from a stop (~20 min) — a farther, faster line can still win
   const MAX_XFER_M = 400;                     // max walking transfer between stops
   const BOARD_SLACK = 30;                     // s buffer before boarding
   const LAT0 = 43.46, LON0 = -80.50, KX = 111320 * Math.cos(LAT0 * Math.PI / 180), KY = 110540;
@@ -36,12 +36,13 @@
     }
   }
   // nearest edge to a point (meters); returns {e, t, d, px, py}
-  function nearestEdge(x, y, maxD, skip) {
+  function nearestEdge(x, y, maxD, skip, ok) {
     let best = null; const r = Math.ceil(maxD / CELL), ci = Math.floor(x / CELL), cj = Math.floor(y / CELL);
     for (let i = ci - r; i <= ci + r; i++) for (let j = cj - r; j <= cj + r; j++) {
       const list = G.grid.get(i + ':' + j); if (!list) continue;
       for (const e of list) {
         const [a, b] = G.edges[e]; if (skip && (a === skip || b === skip)) continue;
+        if (ok && !ok(e)) continue;
         const dx = G.x[b] - G.x[a], dy = G.y[b] - G.y[a], L = dx * dx + dy * dy || 1e-9;
         const t = Math.max(0, Math.min(1, ((x - G.x[a]) * dx + (y - G.y[a]) * dy) / L));
         const px = G.x[a] + t * dx, py = G.y[a] + t * dy, d = Math.hypot(px - x, py - y);
@@ -52,7 +53,10 @@
   }
   // attach a lat/lon to the network: new node on the nearest edge + connector
   function snap(lat, lon, maxD = 300) {
-    const [x, y] = toXY(lat, lon); const ne = nearestEdge(x, y, maxD);
+    // addresses and stops attach to streets / trails on the main connected network, never to a
+    // stray path or sidewalk piece (paths still carry walkers between them)
+    const [x, y] = toXY(lat, lon);
+    const ne = nearestEdge(x, y, maxD, null, snapOk) || nearestEdge(x, y, maxD, null, mainOnly);
     const p = addNode(lat, lon);
     if (!ne) return p;
     const [a, b] = G.edges[ne.e];
@@ -60,7 +64,39 @@
     link(m, a, 'split', false); link(m, b, 'split', false); link(p, m, 'snap', false);
     return p;
   }
-  let graphReady = null;
+  // Add a junction wherever a trail/path segment crosses another segment (street, trail or path).
+  // Street-street crossings are left alone (the road layer is already noded; others are bridges).
+  function nodeCrossings() {
+    const E = G.edges, nE = E.length; let added = 0;
+    const seen = new Set();
+    for (let e = 0; e < nE; e++) {
+      const [a, b, k1] = E[e];
+      if (k1 !== 'trail' && k1 !== 'path') continue;
+      const x0 = Math.floor(Math.min(G.x[a], G.x[b]) / CELL), x1 = Math.floor(Math.max(G.x[a], G.x[b]) / CELL);
+      const y0 = Math.floor(Math.min(G.y[a], G.y[b]) / CELL), y1 = Math.floor(Math.max(G.y[a], G.y[b]) / CELL);
+      for (let i = x0; i <= x1; i++) for (let j = y0; j <= y1; j++) {
+        const list = G.grid.get(i + ':' + j); if (!list) continue;
+        for (const f of list) {
+          if (f === e) continue;
+          const [c, d, k2] = E[f];
+          if (k2 === 'path-grade' || k2 === 'split') continue;
+          if ((k2 === 'trail' || k2 === 'path') && f < e) continue;        // each pair once
+          if (a === c || a === d || b === c || b === d) continue;          // already share a vertex
+          const key = e < f ? e + ',' + f : f + ',' + e; if (seen.has(key)) continue; seen.add(key);
+          const rx = G.x[b] - G.x[a], ry = G.y[b] - G.y[a], sx = G.x[d] - G.x[c], sy = G.y[d] - G.y[c];
+          const den = rx * sy - ry * sx; if (Math.abs(den) < 1e-9) continue;
+          const qx = G.x[c] - G.x[a], qy = G.y[c] - G.y[a];
+          const t = (qx * sy - qy * sx) / den, u = (qx * ry - qy * rx) / den;
+          if (t <= 0.001 || t >= 0.999 || u <= 0.001 || u >= 0.999) continue;
+          const m = addNode(G.ll[a][0] + (G.ll[b][0] - G.ll[a][0]) * t, G.ll[a][1] + (G.ll[b][1] - G.ll[a][1]) * t);
+          link(m, a, 'split', false); link(m, b, 'split', false); link(m, c, 'split', false); link(m, d, 'split', false);
+          added++;
+        }
+      }
+    }
+    console.info('walk network: joined', added, 'path/trail crossings');
+  }
+  let graphReady = null, mainOnly = null, snapOk = null;
   function loadGraph() {
     if (graphReady) return graphReady;
     graphReady = (async () => {
@@ -86,16 +122,40 @@
       };
       add(streets, 'street', () => false);
       add(trails, 'trail', () => false);
+      // extra walking paths (walkways, pathways, pedestrian links, sidewalks); bridges / underpasses
+      // are kept but never joined to what they pass over or under
+      const pathSets = await Promise.all((C.gis.paths || []).map(ps => arcgisAll(ps.url, ps.where || '1=1', ps.fields || 'OBJECTID').catch(e => { console.warn('path layer failed', ps.url, e); return { features: [] }; })));
+      pathSets.forEach((gj, i) => {
+        const nn = (C.gis.paths[i].noNode) || null;
+        for (const f of gj.features) f.__kind = nn && nn.values.includes(f.properties[nn.field]) ? 'path-grade' : 'path';
+        add({ features: gj.features.filter(f => f.__kind === 'path') }, 'path', () => false);
+        add({ features: gj.features.filter(f => f.__kind === 'path-grade') }, 'path-grade', () => false);
+      });
+      // join trails / paths to streets (and to each other) wherever they cross at grade —
+      // the source layers don't share a vertex at most crossings
+      nodeCrossings();
       // connect dangling ends (trail ↔ street, T-junctions not split in the source data)
       for (const [n, kind] of ends) {
         if (G.adj[n].length > 2) continue; // already connected to >1 neighbour
-        const ne = nearestEdge(G.x[n], G.y[n], kind === 'trail' ? 30 : 12, n);
+        const ne = nearestEdge(G.x[n], G.y[n], kind === 'street' ? 12 : 30, n);
         if (!ne) continue;
         const [a, b] = G.edges[ne.e];
         if (G.adj[n].includes(a) && G.adj[n].includes(b)) continue;
         const m = addNode(G.ll[a][0] + (G.ll[b][0] - G.ll[a][0]) * ne.t, G.ll[a][1] + (G.ll[b][1] - G.ll[a][1]) * ne.t);
         link(m, a, 'split', false); link(m, b, 'split', false); link(n, m, 'connector', false);
       }
+      // label connected pieces of the network; snapping only uses the biggest one
+      const comp = new Int32Array(G.x.length).fill(-1), size = [];
+      for (let s0 = 0; s0 < G.x.length; s0++) {
+        if (comp[s0] !== -1) continue;
+        const id = size.length, st = [s0]; comp[s0] = id; let n = 0;
+        while (st.length) { const u = st.pop(); n++; const a = G.adj[u]; for (let k = 0; k < a.length; k += 2) if (comp[a[k]] === -1) { comp[a[k]] = id; st.push(a[k]); } }
+        size.push(n);
+      }
+      const main = size.reduce((m, v, i) => v > size[m] ? i : m, 0);
+      mainOnly = e => comp[G.edges[e][0]] === main;
+      snapOk = e => (G.edges[e][2] === 'street' || G.edges[e][2] === 'trail') && comp[G.edges[e][0]] === main;
+      console.info('walk network:', G.x.length, 'nodes; main piece', size[main]);
       // snap every bus stop once
       APP.stops.forEach(s => s.node = snap(s.lat, s.lon, 150));
       window.APP.trails = trails;
@@ -156,7 +216,7 @@
   const skipped = (trip, stopIdx) => !!preds.trips.get(trip[3])?.stops.get(APP.stops[stopIdx].id)?.skip;
   function raptor(access, egress, t0, day) {
     const svc = activeServices(day.ymd, day.dow);
-    const N = APP.stops.length, K = 3;
+    const N = APP.stops.length, K = 4;   // up to 4 rides (3 transfers)
     const patTrips = sched.patterns.map(() => []);
     sched.trips.forEach(t => { if (svc.has(t[1])) patTrips[t[0]].push(t); });
     patTrips.forEach(l => l.sort((a, b) => a.abs[0] - b.abs[0]));
@@ -194,11 +254,11 @@
       }
       marked = newly; if (!marked.size) break;
     }
-    // best arrival at destination for each number of rides; prefer fewer transfers unless ≥5 min faster
+    // fastest = earliest arrival at the destination; an extra transfer only loses a near-tie (30 s)
     let pick = null;
     for (let k = 1; k < tau.length; k++) for (const [s, sec] of egress) {
       const arr = tau[k][s] + sec;
-      if (arr < Infinity && (!pick || arr < pick.arr - (k > pick.k ? 300 : 0))) pick = { k, s, arr, egress: sec };
+      if (arr < Infinity && (!pick || arr < pick.arr - (k > pick.k ? 30 : 0))) pick = { k, s, arr, egress: sec };
     }
     if (!pick) return null;
     // reconstruct
@@ -224,22 +284,51 @@
     const i = near(A, 0), j = near(B, i);
     return [[A.lat, A.lon], ...sh.slice(i, j + 1), [B.lat, B.lon]];
   }
-  // 10-minute walkshed: every street/trail piece reachable within SHED_M, buffered into one area
+  // N-minute walkshed: every street/trail/path piece reachable within SHED_M, drawn ~55 m wide as one area.
+  // Built on a 15 m grid (stamp each reachable segment, smooth, trace the outline) — fast at any network density.
   function walkshedPolygon(res) {
-    const lines = [];
+    const segs = [];
     for (const [a, b] of G.edges) {
       const da = res.d[a], db = res.d[b];
       if (da > SHED_M && db > SHED_M) continue;
       const [u, v, du] = da <= db ? [a, b, da] : [b, a, db];
       const reach = Math.min(1, (SHED_M - du) / (dist(u, v) || 1));
-      lines.push([[G.ll[u][1], G.ll[u][0]], [G.ll[u][1] + (G.ll[v][1] - G.ll[u][1]) * reach, G.ll[u][0] + (G.ll[v][0] - G.ll[u][0]) * reach]]);
+      segs.push([G.ll[u][0], G.ll[u][1], G.ll[u][0] + (G.ll[v][0] - G.ll[u][0]) * reach, G.ll[u][1] + (G.ll[v][1] - G.ll[u][1]) * reach]);
     }
-    if (!lines.length) return null;
+    if (!segs.length) return null;
     try {
-      const poly = turf.buffer(turf.multiLineString(lines), 55, { units: 'meters', steps: 4 });
-      return turf.simplify(poly, { tolerance: 0.00008, highQuality: false });
+      const R = 55, CELLM = 15, pad = R + 2 * CELLM;
+      let s0 = Infinity, w0 = Infinity, n0 = -Infinity, e0 = -Infinity;
+      for (const [y1, x1, y2, x2] of segs) { s0 = Math.min(s0, y1, y2); n0 = Math.max(n0, y1, y2); w0 = Math.min(w0, x1, x2); e0 = Math.max(e0, x1, x2); }
+      const my = 110540, mx = 111320 * Math.cos((s0 + n0) / 2 * Math.PI / 180);
+      const dy = CELLM / my, dx = CELLM / mx;
+      s0 -= pad / my; n0 += pad / my; w0 -= pad / mx; e0 += pad / mx;
+      const W = Math.ceil((e0 - w0) / dx) + 1, H = Math.ceil((n0 - s0) / dy) + 1;
+      const g = new Float32Array(W * H), rc = Math.ceil(R / CELLM);
+      const stamp = (lat, lon) => {
+        const ci = Math.round((lon - w0) / dx), cj = Math.round((lat - s0) / dy);
+        for (let j = Math.max(0, cj - rc); j <= Math.min(H - 1, cj + rc); j++)
+          for (let i = Math.max(0, ci - rc); i <= Math.min(W - 1, ci + rc); i++)
+            if (((i - ci) ** 2 + (j - cj) ** 2) * CELLM * CELLM <= R * R) g[j * W + i] = 1;
+      };
+      for (const [y1, x1, y2, x2] of segs) {
+        const len = Math.hypot((y2 - y1) * my, (x2 - x1) * mx), n = Math.max(1, Math.ceil(len / (CELLM * .7)));
+        for (let k = 0; k <= n; k++) stamp(y1 + (y2 - y1) * k / n, x1 + (x2 - x1) * k / n);
+      }
+      // light 3×3 smoothing so the outline follows the 55 m band instead of the grid
+      const sm = new Float32Array(W * H);
+      for (let j = 1; j < H - 1; j++) for (let i = 1; i < W - 1; i++) {
+        let t = 0; for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) t += g[(j + b) * W + i + a];
+        sm[j * W + i] = t / 9;
+      }
+      const pts = [];
+      for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) pts.push(turf.point([w0 + i * dx, s0 + j * dy], { z: sm[j * W + i] }));
+      const bands = turf.isobands(turf.featureCollection(pts), [0.5, 2], { zProperty: 'z' });
+      const f = bands.features.find(x => x.geometry && x.geometry.coordinates.length);
+      return f ? turf.simplify(f, { tolerance: 0.00008, highQuality: false }) : null;
     } catch (e) { console.error(e); return null; }
   }
+
 
   // ------------------------------------------------------------ main entry
   window.planTrip = async function (from, to) {
@@ -272,14 +361,19 @@
 
     const walkLine = ll => L.polyline(ll, { pane: 'walk', color: '#3A7AEB', weight: 5, opacity: .95, dashArray: '1 9', lineCap: 'round' }).addTo(L_);
     let steps = [], bounds = L.latLngBounds([[from.lat, from.lon], [to.lat, to.lon]]);
-    const useTransit = plan && plan.arr - t0 < walkSec - 120;
+    const useTransit = plan && plan.arr < t0 + walkSec;   // take transit only if it gets you there sooner
     if (useTransit) {
       const fs = APP.stops[plan.firstStop], ls = APP.stops[plan.lastStop];
       const p1 = pathTo(fromRes, fs.node); walkLine(p1); p1.forEach(x => bounds.extend(x));
       const p2 = pathTo(toRes, ls.node).reverse(); walkLine(p2); p2.forEach(x => bounds.extend(x));
       steps.push(stepWalk(`Walk to <b>${fs.name}</b> <span class="muted">#${fs.code}</span>`, plan.accessSec, fmt(t0)));
       for (const leg of plan.legs) {
-        if (leg.type === 'xfer') { const a = APP.stops[leg.from], b = APP.stops[leg.to]; walkLine([[a.lat, a.lon], [b.lat, b.lon]]); steps.push(stepWalk(`Walk to <b>${b.name}</b> <span class="muted">#${b.code}</span>`, leg.sec)); continue; }
+        if (leg.type === 'xfer') {
+          const a = APP.stops[leg.from], b = APP.stops[leg.to], xr = dijkstra(a.node, MAX_XFER_M * 2);
+          const line = isFinite(xr.d[b.node]) ? pathTo(xr, b.node) : [[a.lat, a.lon], [b.lat, b.lon]];
+          walkLine(line); line.forEach(x => bounds.extend(x));
+          steps.push(stepWalk(`Walk to <b>${b.name}</b> <span class="muted">#${b.code}</span>`, leg.sec)); continue;
+        }
         const pat = sched.patterns[leg.p], r = APP.routes[pat.r];
         const line = shapeSlice(leg.p, leg.from, leg.to);
         L.polyline(line, { pane: 'walk', color: '#fff', weight: 9, opacity: .9 }).addTo(L_);
